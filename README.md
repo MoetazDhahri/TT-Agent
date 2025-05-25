@@ -63,14 +63,6 @@ This application consists of two main components:
 
 5. Open your browser to http://localhost:3000
 
-## Development
-
-The application will now be running with both backend and frontend:
-
-**[https://v0.dev/chat/projects/duTGJRs57yn](https://v0.dev/chat/projects/duTGJRs57yn)**
-
-## How It Works
-
 1. Create and modify your project using [v0.dev](https://v0.dev)
 2. Deploy your chats from the v0 interface
 3. Changes are automatically pushed to this repository
