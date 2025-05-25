@@ -4,7 +4,7 @@
 import uvicorn
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import sys
 import os
 import logging
@@ -17,6 +17,7 @@ import hashlib
 from datetime import datetime
 import requests
 import pandas as pd
+from ollama_client import OllamaClient
 from bs4 import BeautifulSoup, Comment
 from urllib.parse import quote_plus
 import joblib
@@ -42,6 +43,13 @@ class Config:
     LOCAL_MODERATE_CONFIDENCE = 0.65
     LOCAL_LOW_CONFIDENCE = 0.45
     REQUEST_TIMEOUT = 10
+    
+    # Ollama configuration
+    OLLAMA_ENABLED = True
+    OLLAMA_URL = "http://localhost:11434"
+    OLLAMA_MODEL = "llama3"  # Default model to use
+    OLLAMA_TEMPERATURE = 0.7
+    OLLAMA_MAX_TOKENS = 1024
 
     @staticmethod
     def get_paths():
@@ -50,6 +58,68 @@ class Config:
             'tfidf_path': os.path.join(Config.MODEL_DIR, 'tfidf_vectorizer.joblib'),
             'cache_path': os.path.join(Config.CACHE_DIR, 'web_content_cache.json')
         }
+
+# --- Ollama Client ---
+class OllamaClient:
+    """Client for interacting with Ollama API"""
+    
+    def __init__(self, base_url=Config.OLLAMA_URL, model=Config.OLLAMA_MODEL):
+        self.base_url = base_url
+        self.model = model
+        self.api_endpoint = f"{base_url}/api/generate"
+        self.logger = logging.getLogger("TT_QA.OllamaClient")
+        self.logger.info(f"Ollama client initialized with model: {model}")
+    
+    def get_available_models(self):
+        """Get list of available models from Ollama"""
+        try:
+            response = requests.get(f"{self.base_url}/api/tags")
+            if response.status_code == 200:
+                data = response.json()
+                return [model["name"] for model in data.get("models", [])]
+            else:
+                self.logger.error(f"Failed to get models. Status: {response.status_code}")
+                return []
+        except Exception as e:
+            self.logger.error(f"Error connecting to Ollama: {str(e)}")
+            return []
+    
+    def is_available(self):
+        """Check if Ollama service is available"""
+        try:
+            models = self.get_available_models()
+            return len(models) > 0
+        except:
+            return False
+            
+    def generate(self, prompt, system_prompt=None, temperature=Config.OLLAMA_TEMPERATURE, max_tokens=Config.OLLAMA_MAX_TOKENS):
+        """Generate response using Ollama API"""
+        try:
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False
+            }
+            
+            # Add system prompt if provided
+            if system_prompt:
+                payload["system"] = system_prompt
+                
+            self.logger.debug(f"Sending request to Ollama: {self.api_endpoint}")
+            response = requests.post(self.api_endpoint, json=payload)
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("response", "No response from Ollama")
+            else:
+                self.logger.error(f"Ollama API error: {response.status_code} - {response.text}")
+                return f"Error: Failed to get response from Ollama (Status: {response.status_code})"
+                
+        except Exception as e:
+            self.logger.error(f"Error calling Ollama API: {str(e)}")
+            return f"Error connecting to Ollama: {str(e)}"
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO)
@@ -766,6 +836,7 @@ class EnhancedTunisieTelecomAgent:
         self.text_processor = TextProcessor()
         self.web_manager = GoogleSearchManager()
         self.answer_generator = AnswerGenerator()
+        self.ollama_client = OllamaClient()  # Initialize Ollama client
         
         logger.info("TunisieTelecom Agent initialized successfully")
     
@@ -833,11 +904,30 @@ class EnhancedTunisieTelecomAgent:
                 })
         return fb_contents[:Config.MAX_WEB_RESULTS]
 
-    def grok_fallback(self, query):
-        """Call Grok API with system prompt to act as TT assistant (placeholder implementation)"""
+    def get_llm_answer(self, query, use_ollama=True):
+        """Get answer from LLM (Ollama or Grok) with system prompt to act as TT assistant"""
+        system_prompt = "You are a helpful virtual assistant for Tunisie Telecom. Answer as a TT expert, using clear, concise, and friendly language."
+        
+        # Try Ollama first if enabled
+        if use_ollama and Config.OLLAMA_ENABLED:
+            try:
+                logger.info("Attempting to use Ollama for response generation")
+                if self.ollama_client.is_available():
+                    answer = self.ollama_client.generate(query, system_prompt=system_prompt)
+                    if answer and len(answer) > 10:  # Simple check to verify we got a real answer
+                        logger.info("Successfully generated response with Ollama")
+                        return answer
+                    else:
+                        logger.warning("Ollama returned empty or short response, falling back to Grok")
+                else:
+                    logger.warning("Ollama service is not available, falling back to Grok")
+            except Exception as e:
+                logger.error(f"Ollama error: {e}")
+                logger.info("Falling back to Grok API after Ollama error")
+        
+        # Fall back to Grok API
         GROK_API_KEY = os.environ.get("GROK_API_KEY") or "xai-C7tLsZEkKTYtauhZNBFKmPV5tLRraB5JZpGL1l3f3HdcKmSM3gsOuawcVKroeHfkaY5hd0NterLxDFEv"
         url = "https://api.groq.com/openai/v1/chat/completions"
-        system_prompt = "You are a helpful virtual assistant for Tunisie Telecom. Answer as a TT expert, using clear, concise, and friendly language."
         payload = {
             "model": "llama3-70b-8192",
             "messages": [
@@ -847,6 +937,7 @@ class EnhancedTunisieTelecomAgent:
             "temperature": 0.7
         }
         try:
+            logger.info("Calling Grok API for response")
             resp = requests.post(url, headers={
                 "Authorization": f"Bearer {GROK_API_KEY}",
                 "Content-Type": "application/json"
@@ -856,7 +947,12 @@ class EnhancedTunisieTelecomAgent:
                 return data.get("choices", [{}])[0].get("message", {}).get("content", None)
         except Exception as e:
             logger.error(f"Grok API error: {e}")
+        
         return None
+        
+    def grok_fallback(self, query):
+        """Legacy method for backward compatibility"""
+        return self.get_llm_answer(query)
 
     def process_query(self, query):
         logger.info(f"Processing query: {query}")
@@ -891,15 +987,20 @@ class EnhancedTunisieTelecomAgent:
         result['matched_question'] = local_result.get('matched_question')
         result['query'] = query
         result['is_tt_related'] = is_tt_query
-        # 5. If still no informative answer, call Grok API
+        # 5. If still no informative answer, try Ollama or Grok API
         if (not result.get('informative')) or (result.get('source') == 'TT_NOT_IN_KB_NO_WEB'):
-            logger.info("Falling back to Grok API for answer")
-            grok_answer = self.grok_fallback(query)
-            if grok_answer:
-                result['answer'] = grok_answer
-                result['source'] = 'GROK_API'
+            logger.info("Falling back to LLM (Ollama/Grok) for answer")
+            
+            # First try with Ollama
+            llm_answer = self.get_llm_answer(query, use_ollama=True)
+            source = 'OLLAMA' if Config.OLLAMA_ENABLED and self.ollama_client.is_available() else 'GROK_API'
+            
+            if llm_answer:
+                result['answer'] = llm_answer
+                result['source'] = source
                 result['informative'] = True
-                result['formatted_answer'] = grok_answer
+                logger.info(f"Used {source} to generate response")
+                result['formatted_answer'] = llm_answer
         # Format the final answer
         if result.get('answer'):
             result['formatted_answer'] = result['answer']
@@ -1148,12 +1249,30 @@ from file_handler import FileUploadHandler
 
 file_handler = FileUploadHandler(upload_dir="./uploads")
 
+class AskRequest(BaseModel):
+    question: str
+    language: Optional[str] = "fr"
+    use_ollama: Optional[bool] = True
+
 @app.post("/ask", response_model=AskResponse)
 def ask_question(req: AskRequest):
     result = agent.process_query(req.question)
+    
+    # If we need to fallback to LLM, respect the use_ollama preference
+    if (not result.get('informative')) or (result.get('source') == 'TT_NOT_IN_KB_NO_WEB'):
+        use_ollama = req.use_ollama if req.use_ollama is not None else True
+        llm_answer = agent.get_llm_answer(req.question, use_ollama=use_ollama)
+        
+        if llm_answer:
+            source = 'OLLAMA' if use_ollama and Config.OLLAMA_ENABLED and agent.ollama_client.is_available() else 'GROK_API'
+            result['answer'] = llm_answer
+            result['formatted_answer'] = llm_answer
+            result['source'] = source
+            result['informative'] = True
+    
     return AskResponse(
         answer=result.get("formatted_answer", "No answer found."),
-        matched_question=result.get("matched_question"),
+        matched_question=result.get("matched_question"), 
         confidence=result.get("confidence"),
         informative=result.get("informative"),
         source=result.get("source")
@@ -1163,6 +1282,7 @@ def ask_question(req: AskRequest):
 async def ask_with_files(
     question: str = Form(...),
     language: str = Form("fr"),
+    use_ollama: bool = Form(True),
     files: List[UploadFile] = File(None)
 ):
     try:
@@ -1178,6 +1298,17 @@ async def ask_with_files(
         # Process query with file context
         enhanced_question = f"{question}\n\nContext from uploaded files: {file_context}" if file_context else question
         result = agent.process_query(enhanced_question)
+        
+        # If we need to fallback to LLM, respect the use_ollama preference
+        if (not result.get('informative')) or (result.get('source') == 'TT_NOT_IN_KB_NO_WEB'):
+            llm_answer = agent.get_llm_answer(enhanced_question, use_ollama=use_ollama)
+            
+            if llm_answer:
+                source = 'OLLAMA' if use_ollama and Config.OLLAMA_ENABLED and agent.ollama_client.is_available() else 'GROK_API'
+                result['answer'] = llm_answer
+                result['formatted_answer'] = llm_answer
+                result['source'] = source
+                result['informative'] = True
         
         return {
             "answer": result.get("formatted_answer", "No answer found."),
@@ -1214,3 +1345,174 @@ def get_stats():
         "uptime": "0 days",  # Placeholder
         "top_questions": []  # Placeholder
     }
+
+# --- Ollama Client ---
+class OllamaClient:
+    """Client for interacting with Ollama API"""
+    
+    def __init__(self, base_url=Config.OLLAMA_URL, model=Config.OLLAMA_MODEL):
+        self.base_url = base_url
+        self.model = model
+        self.api_endpoint = f"{base_url}/api/generate"
+        self.logger = logging.getLogger("TT_QA.OllamaClient")
+        self.logger.info(f"Ollama client initialized with model: {model}")
+    
+    def get_available_models(self):
+        """Get list of available models from Ollama"""
+        try:
+            response = requests.get(f"{self.base_url}/api/tags")
+            if response.status_code == 200:
+                data = response.json()
+                return [model["name"] for model in data.get("models", [])]
+            else:
+                self.logger.error(f"Failed to get models. Status: {response.status_code}")
+                return []
+        except Exception as e:
+            self.logger.error(f"Error connecting to Ollama: {str(e)}")
+            return []
+    
+    def is_available(self):
+        """Check if Ollama service is available"""
+        try:
+            models = self.get_available_models()
+            return len(models) > 0
+        except:
+            return False
+            
+    def generate(self, prompt, system_prompt=None, temperature=Config.OLLAMA_TEMPERATURE, max_tokens=Config.OLLAMA_MAX_TOKENS):
+        """Generate response using Ollama API"""
+        try:
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False
+            }
+            
+            # Add system prompt if provided
+            if system_prompt:
+                payload["system"] = system_prompt
+                
+            self.logger.debug(f"Sending request to Ollama: {self.api_endpoint}")
+            response = requests.post(self.api_endpoint, json=payload)
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("response", "No response from Ollama")
+            else:
+                self.logger.error(f"Ollama API error: {response.status_code} - {response.text}")
+                return f"Error: Failed to get response from Ollama (Status: {response.status_code})"
+                
+        except Exception as e:
+            self.logger.error(f"Error calling Ollama API: {str(e)}")
+            return f"Error connecting to Ollama: {str(e)}"
+
+@app.get("/ollama/models")
+async def get_ollama_models():
+    """Get available Ollama models and current configuration"""
+    try:
+        # Check if Ollama is available and get models
+        models = agent.ollama_client.get_available_models()
+        
+        return {
+            "current_model": agent.ollama_client.model,
+            "available_models": models,
+            "is_enabled": Config.OLLAMA_ENABLED,
+            "is_available": len(models) > 0,
+            "stats": agent.ollama_client.get_stats()
+        }
+    except Exception as e:
+        logger.error(f"Error getting Ollama models: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error connecting to Ollama: {str(e)}")
+
+@app.post("/ollama/model")
+async def set_ollama_model(model: str):
+    """Set the Ollama model to use"""
+    try:
+        # Verify model is available
+        available_models = agent.ollama_client.get_available_models()
+        if model not in available_models:
+            # Try to pull the model if not found
+            logger.info(f"Model '{model}' not found. Attempting to pull it from Ollama repository...")
+            pull_result = agent.ollama_client.pull_model(model)
+            
+            if not pull_result.get("success", False):
+                raise HTTPException(status_code=404, detail=f"Model '{model}' not available and could not be pulled. Options: {available_models}")
+            
+            # Refresh the model list
+            available_models = agent.ollama_client.get_available_models()
+            if model not in available_models:
+                raise HTTPException(status_code=404, detail=f"Model pulled but still not available. Options: {available_models}")
+        
+        # Set the model
+        agent.ollama_client.model = model
+        logger.info(f"Set Ollama model to: {model}")
+        
+        # Get model info
+        model_info = agent.ollama_client.get_model_info(model)
+        
+        return {
+            "message": f"Ollama model set to: {model}",
+            "current_model": model,
+            "model_info": model_info
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting Ollama model: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error setting Ollama model: {str(e)}")
+
+@app.post("/ollama/toggle")
+async def toggle_ollama(enable: bool = True):
+    """Enable or disable Ollama"""
+    try:
+        # Update configuration
+        Config.OLLAMA_ENABLED = enable
+        status = "enabled" if enable else "disabled"
+        logger.info(f"Ollama {status}")
+        
+        # If enabling, check if Ollama is actually available
+        is_available = False
+        if enable:
+            is_available = agent.ollama_client.is_available()
+            if not is_available:
+                logger.warning("Ollama was enabled but server is not reachable")
+        
+        return {
+            "message": f"Ollama has been {status}",
+            "is_enabled": enable,
+            "is_available": is_available if enable else False
+        }
+    except Exception as e:
+        logger.error(f"Error toggling Ollama: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error toggling Ollama: {str(e)}")
+
+@app.post("/ollama/pull")
+async def pull_ollama_model(model: str):
+    """Pull a new model from the Ollama library"""
+    try:
+        # Verify Ollama is available
+        if not agent.ollama_client.is_available():
+            raise HTTPException(
+                status_code=503, 
+                detail="Ollama server is not available. Please make sure it's running."
+            )
+        
+        # Pull the model
+        result = agent.ollama_client.pull_model(model)
+        if result.get("success", False):
+            return {
+                "message": f"Model {model} pulled successfully",
+                "success": True
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to pull model: {result.get('message', 'Unknown error')}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error pulling Ollama model: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error pulling Ollama model: {str(e)}")
