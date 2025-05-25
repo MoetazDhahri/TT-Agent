@@ -1,0 +1,38 @@
+- Backend API: http://localhost:8000
+- Backend API Documentation: http://localhost:8000/docs
+- Frontend: http://localhost:3000
+
+### Backend Development
+
+The backend is built with FastAPI and provides:
+
+- REST API endpoints for the Q&A system
+- File upload processing
+- ML-based question answering
+
+The main components are:
+- `backend.py`: Main application with FastAPI routes
+- `file_handler.py`: Handles file uploads and processing
+- `run_server.py`: Server startup script
+- `model/`: Directory containing ML models
+
+### Frontend Development
+
+The frontend is built with Next.js and provides:
+
+- Chat interface
+- File upload UI
+- Multi-language support
+- Voice output integration
+
+The main components are:
+- `app/page.tsx`: Main chat interface
+- `app/api/chat/route.ts`: API route that handles chat requests
+- `components/`: UI components
+- `styles/`: CSS and styling
+
+## Credits
+
+- Built with Next.js, FastAPI, and TailwindCSS
+- Icons from Lucide
+- UI components from shadcn/ui

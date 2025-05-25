@@ -1,0 +1,42 @@
+/* app/page.module.css */
+
+.messageContainer {
+  /* Add any custom container styles here */
+}
+
+.messageList {
+  /* Add any custom message list styles here */
+}
+
+.particleContainer {
+  position: absolute;
+  left: 10%;
+  top: 10%;
+}
+.particleContainer2 {
+  position: absolute;
+  right: 10%;
+  top: 30%;
+}
+.particleContainer3 {
+  position: absolute;
+  left: 30%;
+  bottom: 10%;
+}
+.particleContainer4 {
+  position: absolute;
+  right: 20%;
+  bottom: 20%;
+}
+
+.animationDelay1 {
+  animation-delay: 0.2s;
+}
+.animationDelay2 {
+  animation-delay: 0.4s;
+}
+.animationDelaySlow {
+  animation-duration: 1.5s;
+}
+
+/* Add more styles as needed for your chat UI */
